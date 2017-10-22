@@ -11,8 +11,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-const int WIDTH = 1280;
-const int HEIGHT = 720;
+const int INITIAL_WIDTH = 800;
+const int INITIAL_HEIGHT = 600;
 
 const std::vector<const char *> VALIDATION_LAYERS = {
   "VK_LAYER_LUNARG_standard_validation",
@@ -95,14 +95,28 @@ private:
   std::vector<VkFramebuffer> swapChainFramebuffers;
   VkCommandPool commandPool;
   std::vector<VkCommandBuffer> commandBuffers;
+  VkSemaphore imageAvailableSemaphore;
+  VkSemaphore renderFinishedSemaphore;
 
   void initWindow() {
     glfwInit();
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+    window = glfwCreateWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "Vulkan", nullptr, nullptr);
+
+    glfwSetWindowUserPointer(window, this);
+    glfwSetWindowSizeCallback(window, HelloTriangleApplication::onWindowResized);
+  }
+
+  static void onWindowResized(GLFWwindow *window, int width, int height) {
+    if (width == 0 || height == 0) {
+      return;
+    }
+
+    auto *app = reinterpret_cast<HelloTriangleApplication *>(glfwGetWindowUserPointer(window));
+    app->recreateSwapChain();
   }
 
   void initVulkan() {
@@ -124,6 +138,7 @@ private:
     createFramebuffers();
     createCommandPool();
     createCommandBuffers();
+    createSemaphores();
   }
 
   void checkExtensionSupport() {
@@ -448,7 +463,10 @@ private:
       return capabilities.currentExtent;
     }
 
-    VkExtent2D actualExtent = {WIDTH, HEIGHT};
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
+
+    VkExtent2D actualExtent = {(uint32_t)width, (uint32_t)height};
     actualExtent.width = std::max(capabilities.minImageExtent.width, std::min(capabilities.maxImageExtent.width, actualExtent.width));
     actualExtent.height = std::max(capabilities.minImageExtent.height, std::min(capabilities.maxImageExtent.height, actualExtent.height));
 
@@ -504,6 +522,36 @@ private:
 
     swapChainImageFormat = surfaceFormat.format;
     swapChainExtent = extent;
+  }
+
+  void recreateSwapChain() {
+    vkDeviceWaitIdle(device);
+    cleanupSwapChain();
+
+    createSwapChain();
+    createImageViews();
+    createRenderPass();
+    createGraphicsPipeline();
+    createFramebuffers();
+    createCommandBuffers();
+  }
+
+  void cleanupSwapChain() {
+    for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+      vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
+    }
+
+    vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+
+    vkDestroyPipeline(device, graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyRenderPass(device, renderPass, nullptr);
+
+    for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+      vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+    }
+
+    vkDestroySwapchainKHR(device, swapChain, nullptr);
   }
 
   void createImageViews() {
@@ -584,12 +632,22 @@ private:
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
 
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo renderPassCreateInfo = {};
     renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassCreateInfo.attachmentCount = 1;
     renderPassCreateInfo.pAttachments = &colorAttachment;
     renderPassCreateInfo.subpassCount = 1;
     renderPassCreateInfo.pSubpasses = &subpass;
+    renderPassCreateInfo.dependencyCount = 1;
+    renderPassCreateInfo.pDependencies = &dependency;
 
     if (vkCreateRenderPass(device, &renderPassCreateInfo, nullptr, &renderPass) != VK_SUCCESS) {
       throw std::runtime_error("Failed to create the render pass.");
@@ -777,28 +835,82 @@ private:
     }
   }
 
+  void createSemaphores() {
+    VkSemaphoreCreateInfo semaphoreCreateInfo = {};
+    semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create semaphores.");
+    }
+  }
+
   void mainLoop() {
     while (glfwWindowShouldClose(window) == 0) {
       glfwPollEvents();
+      drawFrame();
+    }
+
+    vkDeviceWaitIdle(device);
+  }
+
+  void drawFrame() {
+    vkQueueWaitIdle(presentQueue);
+
+    uint32_t imageIndex;
+    VkResult result = vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+      recreateSwapChain();
+      return;
+    } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+      throw std::runtime_error("Failed to acquire swap chain image.");
+    }
+
+    VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+      throw std::runtime_error("Failed to submit draw command buffer.");
+    }
+
+    VkSwapchainKHR swapChains[] = {swapChain};
+
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+      recreateSwapChain();
+    } else if (result != VK_SUCCESS) {
+      throw std::runtime_error("Failed to present swap chain image.");
     }
   }
 
   void cleanup() {
+    cleanupSwapChain();
+
+    vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+    vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+
     vkDestroyCommandPool(device, commandPool, nullptr);
 
-    for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
-      vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
-    }
-
-    vkDestroyPipeline(device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkDestroyRenderPass(device, renderPass, nullptr);
-
-    for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-      vkDestroyImageView(device, swapChainImageViews[i], nullptr);
-    }
-
-    vkDestroySwapchainKHR(device, swapChain, nullptr);
     vkDestroyDevice(device, nullptr);
     DestroyDebugReportCallbackEXT(instance, callback, nullptr);
     vkDestroySurfaceKHR(instance, surface, nullptr);
