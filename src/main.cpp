@@ -120,7 +120,9 @@ private:
   }
 
   void initVulkan() {
-    checkExtensionSupport();
+    if (checkExtensionSupport() == false) {
+      throw std::runtime_error("Extensions requested, but not available.");
+    }
 
     if (enableValidationLayers == true && checkValidationLayerSupport() == false) {
       throw std::runtime_error("Validation layers requested, but not available.");
@@ -141,20 +143,31 @@ private:
     createSemaphores();
   }
 
-  void checkExtensionSupport() {
+  bool checkExtensionSupport() {
     uint32_t extensionCount = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
 
     std::vector<VkExtensionProperties> extensions(extensionCount);
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
 
-    std::cout << "Available extensions:" << std::endl;
+    std::vector<const char *>requiredExtensions = getRequiredExtensions();
 
-    for (const auto &extension : extensions) {
-      std::cout << "  " << extension.extensionName << std::endl;
+    for (const char *requiredExtension : requiredExtensions) {
+      bool extensionFound = false;
+
+      for (const auto &extension : extensions) {
+        if (strcmp(requiredExtension, extension.extensionName) == 0) {
+          extensionFound = true;
+          break;
+        }
+      }
+
+      if (extensionFound == false) {
+        return false;
+      }
     }
 
-    // TODO: Check with GLFW.
+    return true;
   }
 
   bool checkValidationLayerSupport() {
