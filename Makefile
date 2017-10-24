@@ -1,11 +1,11 @@
 .PHONY: build shaders
 
-all: build shaders
+all: build
 
-build:
+build: shaders
 	g++ -std=c++11 -m64 -g src/main.cpp -I vendor/vulkan/Include -I vendor/glfw/include -I vendor/glm -I vendor/stb -I vendor/tinyobjloader -L vendor/vulkan/Lib -L vendor/glfw/lib -l glfw3 -l vulkan-1 -o build/main.exe
 
-release:
+release: shaders
 	g++ -std=c++11 -m64 -O3 -s src/main.cpp -I vendor/vulkan/Include -I vendor/glfw/include -I vendor/glm -I vendor/stb -I vendor/tinyobjloader -L vendor/vulkan/Lib -L vendor/glfw/lib -l glfw3 -l vulkan-1 -o build/main.exe
 
 shaders:
